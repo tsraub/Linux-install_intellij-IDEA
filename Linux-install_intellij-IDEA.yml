@@ -1,6 +1,6 @@
 ---
 - name: Install IntelliJ IDEA with desktop entry (hardened for Debian/Ubuntu/RHEL)
-  hosts: lab_linux
+  hosts: all
   become: true
   become_method: sudo
   become_user: root
