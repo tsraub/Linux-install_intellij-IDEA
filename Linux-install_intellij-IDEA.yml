@@ -1,7 +1,9 @@
 ---
-- name: Install IntelliJ IDEA with desktop entry
-  hosts: all
-  become: yes
+- name: Install IntelliJ IDEA with desktop entry (hardened for Debian/Ubuntu/RHEL)
+  hosts: lab_linux
+  become: true
+  become_method: sudo
+  become_user: root
   gather_facts: yes
 
   vars:
@@ -10,13 +12,10 @@
     idea_edition: "IU"               # "IU" or "IC"
     idea_version: "2024.2.4"         # e.g., "2024.2.4"
 
-    # Build URL automatically from edition/version
-    # Ultimate: ideaIU-<ver>.tar.gz ; Community: ideaIC-<ver>.tar.gz
+    # Build URL (JetBrains direct tarball)
     intellij_filename: "idea{{ idea_edition }}-{{ idea_version }}.tar.gz"
     intellij_url: "https://download.jetbrains.com/idea/{{ intellij_filename }}"
-
-    # Optional: add a known SHA256 checksum if you want integrity checks (recommended)
-    # Find checksum on JetBrains site and paste here; otherwise leave empty.
+    # Optional checksum (recommended): grab SHA256 from JetBrains and paste here
     intellij_sha256: ""  # e.g., "abc123..."
 
     # Install locations
@@ -30,25 +29,74 @@
     desktop_file_path: "/usr/share/applications/jetbrains-idea.desktop"
     icon_dest_path: "/usr/share/pixmaps/jetbrains-idea.png"
 
-  tasks:
-    - name: Ensure required tools are present (curl/tar/desktop-file-utils)
-      package:
-        name: "{{ item }}"
-        state: present
-      loop:
-        - curl
-        - tar
-        - desktop-file-utils  # provides update-desktop-database on Debian/Ubuntu; on RHEL it's in desktop-file-utils as well
-      ignore_errors: yes   # harmless on distros where names differ
+  pre_tasks:
+    - name: Verify we are root (become working)
+      command: id -u
+      register: uid_check
+      changed_when: false
 
-    - name: Create /opt and working directories
+    - name: Fail early if not root (enable privilege escalation in AWX/job)
+      fail:
+        msg: "Privilege escalation not active (uid={{ uid_check.stdout }}). Enable sudo/become."
+      when: uid_check.stdout != '0'
+
+    - name: Update apt cache (Debian/Ubuntu)
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_facts.pkg_mgr == 'apt'
+
+    # Debian/Ubuntu: ensure APT state files have sane perms (avoids mkstemp(13))
+    - name: Ensure /var/lib/apt/extended_states exists with sane perms
       file:
-        path: "{{ item }}"
+        path: /var/lib/apt/extended_states
+        state: touch
+        owner: _apt
+        group: root
+        mode: '0644'
+      when: ansible_facts.pkg_mgr == 'apt'
+
+  tasks:
+    # ---------- Base tools ----------
+    - name: Ensure base tools on Debian/Ubuntu
+      apt:
+        name:
+          - curl
+          - tar
+        state: present
+      when: ansible_facts.os_family == 'Debian'
+
+    - name: Ensure base tools on RHEL family
+      yum:
+        name:
+          - curl
+          - tar
+        state: present
+      when: ansible_facts.os_family == 'RedHat'
+
+    # desktop-file-utils is nice-to-have; do not fail if missing
+    - name: Install desktop-file-utils on Debian/Ubuntu (non-fatal)
+      apt:
+        name: desktop-file-utils
+        state: present
+      register: dfile_utils_deb
+      failed_when: false
+      when: ansible_facts.os_family == 'Debian'
+
+    - name: Install desktop-file-utils on RHEL family (non-fatal)
+      yum:
+        name: desktop-file-utils
+        state: present
+      register: dfile_utils_rh
+      failed_when: false
+      when: ansible_facts.os_family == 'RedHat'
+
+    # ---------- Download & Install IntelliJ ----------
+    - name: Create /opt and parents
+      file:
+        path: "{{ intellij_base_dir }}"
         state: directory
         mode: '0755'
-      loop:
-        - "{{ intellij_base_dir }}"
-        - "{{ intellij_versioned_dir | dirname }}"
 
     - name: Download IntelliJ IDEA tarball
       get_url:
@@ -58,16 +106,20 @@
         force: yes
         checksum: "{{ ('sha256:' + intellij_sha256) if intellij_sha256|length > 0 else omit }}"
 
+    - name: Create versioned install dir
+      file:
+        path: "{{ intellij_versioned_dir }}"
+        state: directory
+        mode: '0755'
+
     - name: Extract IntelliJ to versioned directory
       unarchive:
         src: "{{ intellij_archive_path }}"
         dest: "{{ intellij_versioned_dir }}"
         remote_src: yes
-        extra_opts:
-          - --strip-components=1
-      # If already extracted for this exact version, unarchive will be idempotent.
+        extra_opts: [--strip-components=1]
 
-    - name: Create/update stable /opt/intellij symlink to the selected version
+    - name: Create/update stable /opt/intellij symlink to this version
       file:
         src: "{{ intellij_versioned_dir }}"
         dest: "{{ intellij_current_link }}"
@@ -108,7 +160,7 @@
           MimeType=text/x-java;text/x-groovy;text/x-kotlin;application/x-java-archive;
           X-Desktop-File-Install-Version=0.26
 
-    - name: Update desktop database (if available)
+    - name: Update desktop database if available (non-fatal)
       command: update-desktop-database
       register: desktopdb
       changed_when: "'updated' in (desktopdb.stderr | default('')) or 'updated' in (desktopdb.stdout | default(''))"
@@ -122,3 +174,4 @@
           - "Launcher: {{ intellij_launcher_symlink }}"
           - "Desktop entry: {{ desktop_file_path }}"
           - "Icon: {{ icon_dest_path }}"
+          - "desktop-file-utils (Debian): rc={{ dfile_utils_deb.rc | default('n/a') }}, (RHEL): rc={{ dfile_utils_rh.rc | default('n/a') }}"
