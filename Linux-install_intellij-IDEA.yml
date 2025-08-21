@@ -1,0 +1,124 @@
+---
+- name: Install IntelliJ IDEA with desktop entry
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  vars:
+    # ----- Choose edition and version -----
+    # IU = Ultimate, IC = Community
+    idea_edition: "IU"               # "IU" or "IC"
+    idea_version: "2024.2.4"         # e.g., "2024.2.4"
+
+    # Build URL automatically from edition/version
+    # Ultimate: ideaIU-<ver>.tar.gz ; Community: ideaIC-<ver>.tar.gz
+    intellij_filename: "idea{{ idea_edition }}-{{ idea_version }}.tar.gz"
+    intellij_url: "https://download.jetbrains.com/idea/{{ intellij_filename }}"
+
+    # Optional: add a known SHA256 checksum if you want integrity checks (recommended)
+    # Find checksum on JetBrains site and paste here; otherwise leave empty.
+    intellij_sha256: ""  # e.g., "abc123..."
+
+    # Install locations
+    intellij_base_dir: "/opt"
+    intellij_versioned_dir: "{{ intellij_base_dir }}/intellij-{{ idea_version }}"
+    intellij_current_link: "{{ intellij_base_dir }}/intellij"
+    intellij_archive_path: "/tmp/{{ intellij_filename }}"
+    intellij_launcher_symlink: "/usr/local/bin/idea"
+
+    # Desktop integration
+    desktop_file_path: "/usr/share/applications/jetbrains-idea.desktop"
+    icon_dest_path: "/usr/share/pixmaps/jetbrains-idea.png"
+
+  tasks:
+    - name: Ensure required tools are present (curl/tar/desktop-file-utils)
+      package:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - curl
+        - tar
+        - desktop-file-utils  # provides update-desktop-database on Debian/Ubuntu; on RHEL it's in desktop-file-utils as well
+      ignore_errors: yes   # harmless on distros where names differ
+
+    - name: Create /opt and working directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ intellij_base_dir }}"
+        - "{{ intellij_versioned_dir | dirname }}"
+
+    - name: Download IntelliJ IDEA tarball
+      get_url:
+        url: "{{ intellij_url }}"
+        dest: "{{ intellij_archive_path }}"
+        mode: '0644'
+        force: yes
+        checksum: "{{ ('sha256:' + intellij_sha256) if intellij_sha256|length > 0 else omit }}"
+
+    - name: Extract IntelliJ to versioned directory
+      unarchive:
+        src: "{{ intellij_archive_path }}"
+        dest: "{{ intellij_versioned_dir }}"
+        remote_src: yes
+        extra_opts:
+          - --strip-components=1
+      # If already extracted for this exact version, unarchive will be idempotent.
+
+    - name: Create/update stable /opt/intellij symlink to the selected version
+      file:
+        src: "{{ intellij_versioned_dir }}"
+        dest: "{{ intellij_current_link }}"
+        state: link
+        force: yes
+
+    - name: Create /usr/local/bin/idea launcher symlink
+      file:
+        src: "{{ intellij_current_link }}/bin/idea.sh"
+        dest: "{{ intellij_launcher_symlink }}"
+        state: link
+        mode: '0755'
+        force: yes
+
+    - name: Install IntelliJ icon to system pixmaps
+      copy:
+        src: "{{ intellij_current_link }}/bin/idea.png"
+        dest: "{{ icon_dest_path }}"
+        remote_src: yes
+        mode: '0644'
+
+    - name: Create IntelliJ desktop entry
+      copy:
+        dest: "{{ desktop_file_path }}"
+        mode: '0644'
+        content: |
+          [Desktop Entry]
+          Version=1.0
+          Type=Application
+          Name=IntelliJ IDEA {{ 'Ultimate' if idea_edition == 'IU' else 'Community' }}
+          Comment=Capable & ergonomic IDE for JVM/Android (JetBrains)
+          Exec={{ intellij_launcher_symlink }} %f
+          Icon={{ icon_dest_path }}
+          Terminal=false
+          Categories=Development;IDE;Java;
+          StartupNotify=true
+          StartupWMClass=jetbrains-idea
+          MimeType=text/x-java;text/x-groovy;text/x-kotlin;application/x-java-archive;
+          X-Desktop-File-Install-Version=0.26
+
+    - name: Update desktop database (if available)
+      command: update-desktop-database
+      register: desktopdb
+      changed_when: "'updated' in (desktopdb.stderr | default('')) or 'updated' in (desktopdb.stdout | default(''))"
+      failed_when: false
+
+    - name: Show install summary
+      debug:
+        msg:
+          - "IntelliJ {{ 'Ultimate' if idea_edition == 'IU' else 'Community' }} {{ idea_version }} installed to: {{ intellij_versioned_dir }}"
+          - "Stable symlink: {{ intellij_current_link }}"
+          - "Launcher: {{ intellij_launcher_symlink }}"
+          - "Desktop entry: {{ desktop_file_path }}"
+          - "Icon: {{ icon_dest_path }}"
