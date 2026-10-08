@@ -1,158 +1,168 @@
 ---
-- name: Install IntelliJ IDEA with desktop entry (hardened for Debian/Ubuntu/RHEL)
+- name: Install or update IntelliJ IDEA
   hosts: all
   become: true
   become_method: sudo
   become_user: root
-  gather_facts: yes
+  gather_facts: true
 
   vars:
-    # ----- Choose edition and version -----
     # IU = Ultimate, IC = Community
-    idea_edition: "IU"               # "IU" or "IC"
-    idea_version: "2024.2.4"         # e.g., "2024.2.4"
+    idea_edition: "IU"
+    idea_version: "2026.2.3"
 
-    # Build URL (JetBrains direct tarball)
-    intellij_filename: "idea{{ idea_edition }}-{{ idea_version }}.tar.gz"
-    intellij_url: "https://download.jetbrains.com/idea/{{ intellij_filename }}"
-    # Optional checksum (recommended): grab SHA256 from JetBrains and paste here
-    intellij_sha256: ""  # e.g., "abc123..."
+    # JetBrains unified Linux archive naming
+    intellij_filename: "idea-2026.2.3.tar.gz"
+    intellij_url: "https://download.jetbrains.com/idea/idea-2026.2.3.tar.gz"
+    intellij_checksum: "sha256:https://download.jetbrains.com/idea/idea-2026.2.3.tar.gz.sha256"
 
-    # Install locations
     intellij_base_dir: "/opt"
-    intellij_versioned_dir: "{{ intellij_base_dir }}/intellij-{{ idea_version }}"
-    intellij_current_link: "{{ intellij_base_dir }}/intellij"
-    intellij_archive_path: "/tmp/{{ intellij_filename }}"
+    intellij_versioned_dir: "/opt/intellij-2026.2.3"
+    intellij_current_link: "/opt/intellij"
+    intellij_archive_path: "/tmp/idea-2026.2.3.tar.gz"
     intellij_launcher_symlink: "/usr/local/bin/idea"
 
-    # Desktop integration
     desktop_file_path: "/usr/share/applications/jetbrains-idea.desktop"
     icon_dest_path: "/usr/share/pixmaps/jetbrains-idea.png"
 
   pre_tasks:
-    - name: Verify we are root (become working)
-      command: id -u
+    - name: Verify privilege escalation
+      ansible.builtin.command: id -u
       register: uid_check
       changed_when: false
 
-    - name: Fail early if not root (enable privilege escalation in AWX/job)
-      fail:
-        msg: "Privilege escalation not active (uid={{ uid_check.stdout }}). Enable sudo/become."
-      when: uid_check.stdout != '0'
+    - name: Fail if privilege escalation is inactive
+      ansible.builtin.fail:
+        msg: "Privilege escalation is not active. Enable sudo/become."
+      when: uid_check.stdout != "0"
 
-    - name: Update apt cache (Debian/Ubuntu)
-      apt:
-        update_cache: yes
+    - name: Update APT cache
+      ansible.builtin.apt:
+        update_cache: true
         cache_valid_time: 3600
-      when: ansible_facts.pkg_mgr == 'apt'
-
-    # Debian/Ubuntu: ensure APT state files have sane perms (avoids mkstemp(13))
-    - name: Ensure /var/lib/apt/extended_states exists with sane perms
-      file:
-        path: /var/lib/apt/extended_states
-        state: touch
-        owner: _apt
-        group: root
-        mode: '0644'
-      when: ansible_facts.pkg_mgr == 'apt'
+      when: ansible_facts.pkg_mgr == "apt"
 
   tasks:
-    # ---------- Base tools ----------
-    - name: Ensure base tools on Debian/Ubuntu
-      apt:
+    - name: Install required tools on Debian or Ubuntu
+      ansible.builtin.apt:
         name:
           - curl
           - tar
         state: present
-      when: ansible_facts.os_family == 'Debian'
+      when: ansible_facts.os_family == "Debian"
 
-    - name: Ensure base tools on RHEL family
-      yum:
+    - name: Install required tools on RHEL family
+      ansible.builtin.yum:
         name:
           - curl
           - tar
         state: present
-      when: ansible_facts.os_family == 'RedHat'
+      when: ansible_facts.os_family == "RedHat"
 
-    # desktop-file-utils is nice-to-have; do not fail if missing
-    - name: Install desktop-file-utils on Debian/Ubuntu (non-fatal)
-      apt:
+    - name: Install desktop-file-utils on Debian or Ubuntu
+      ansible.builtin.apt:
         name: desktop-file-utils
         state: present
-      register: dfile_utils_deb
       failed_when: false
-      when: ansible_facts.os_family == 'Debian'
+      when: ansible_facts.os_family == "Debian"
 
-    - name: Install desktop-file-utils on RHEL family (non-fatal)
-      yum:
+    - name: Install desktop-file-utils on RHEL family
+      ansible.builtin.yum:
         name: desktop-file-utils
         state: present
-      register: dfile_utils_rh
       failed_when: false
-      when: ansible_facts.os_family == 'RedHat'
+      when: ansible_facts.os_family == "RedHat"
 
-    # ---------- Download & Install IntelliJ ----------
-    - name: Create /opt and parents
-      file:
-        path: "{{ intellij_base_dir }}"
+    - name: Create IntelliJ base directory
+      ansible.builtin.file:
+        path: "/opt"
         state: directory
-        mode: '0755'
+        owner: root
+        group: root
+        mode: "0755"
 
-    - name: Download IntelliJ IDEA tarball
-      get_url:
-        url: "{{ intellij_url }}"
-        dest: "{{ intellij_archive_path }}"
-        mode: '0644'
-        force: yes
-        checksum: "{{ ('sha256:' + intellij_sha256) if intellij_sha256|length > 0 else omit }}"
+    - name: Download IntelliJ IDEA archive
+      ansible.builtin.get_url:
+        url: "https://download.jetbrains.com/idea/idea-2026.2.3.tar.gz"
+        dest: "/tmp/idea-2026.2.3.tar.gz"
+        owner: root
+        group: root
+        mode: "0644"
+        checksum: "sha256:https://download.jetbrains.com/idea/idea-2026.2.3.tar.gz.sha256"
+        force: false
 
-    - name: Create versioned install dir
-      file:
-        path: "{{ intellij_versioned_dir }}"
+    - name: Check installed IntelliJ version
+      ansible.builtin.command:
+        cmd: "/opt/intellij-2026.2.3/bin/idea.sh --version"
+      register: installed_intellij
+      changed_when: false
+      failed_when: false
+
+    - name: Remove incomplete or incorrect version directory
+      ansible.builtin.file:
+        path: "/opt/intellij-2026.2.3"
+        state: absent
+      when:
+        - installed_intellij.rc != 0 or "2026.2.3" not in installed_intellij.stdout
+
+    - name: Create versioned IntelliJ directory
+      ansible.builtin.file:
+        path: "/opt/intellij-2026.2.3"
         state: directory
-        mode: '0755'
+        owner: root
+        group: root
+        mode: "0755"
 
-    - name: Extract IntelliJ to versioned directory
-      unarchive:
-        src: "{{ intellij_archive_path }}"
-        dest: "{{ intellij_versioned_dir }}"
-        remote_src: yes
-        extra_opts: [--strip-components=1]
+    - name: Extract IntelliJ IDEA
+      ansible.builtin.unarchive:
+        src: "/tmp/idea-2026.2.3.tar.gz"
+        dest: "/opt/intellij-2026.2.3"
+        remote_src: true
+        extra_opts:
+          - "--strip-components=1"
+        creates: "/opt/intellij-2026.2.3/bin/idea.sh"
 
-    - name: Create/update stable /opt/intellij symlink to this version
-      file:
-        src: "{{ intellij_versioned_dir }}"
-        dest: "{{ intellij_current_link }}"
+    - name: Update stable IntelliJ symlink
+      ansible.builtin.file:
+        src: "/opt/intellij-2026.2.3"
+        dest: "/opt/intellij"
         state: link
-        force: yes
+        owner: root
+        group: root
+        force: true
 
-    - name: Create /usr/local/bin/idea launcher symlink
-      file:
-        src: "{{ intellij_current_link }}/bin/idea.sh"
-        dest: "{{ intellij_launcher_symlink }}"
+    - name: Update IntelliJ launcher symlink
+      ansible.builtin.file:
+        src: "/opt/intellij/bin/idea.sh"
+        dest: "/usr/local/bin/idea"
         state: link
-        mode: '0755'
-        force: yes
+        owner: root
+        group: root
+        force: true
 
-    - name: Install IntelliJ icon to system pixmaps
-      copy:
-        src: "{{ intellij_current_link }}/bin/idea.png"
-        dest: "{{ icon_dest_path }}"
-        remote_src: yes
-        mode: '0644'
+    - name: Install IntelliJ icon
+      ansible.builtin.copy:
+        src: "/opt/intellij/bin/idea.png"
+        dest: "/usr/share/pixmaps/jetbrains-idea.png"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
 
-    - name: Create IntelliJ desktop entry
-      copy:
-        dest: "{{ desktop_file_path }}"
-        mode: '0644'
+    - name: Install IntelliJ desktop entry
+      ansible.builtin.copy:
+        dest: "/usr/share/applications/jetbrains-idea.desktop"
+        owner: root
+        group: root
+        mode: "0644"
         content: |
           [Desktop Entry]
           Version=1.0
           Type=Application
-          Name=IntelliJ IDEA {{ 'Ultimate' if idea_edition == 'IU' else 'Community' }}
-          Comment=Capable & ergonomic IDE for JVM/Android (JetBrains)
-          Exec={{ intellij_launcher_symlink }} %f
-          Icon={{ icon_dest_path }}
+          Name=IntelliJ IDEA Ultimate
+          Comment=Capable and ergonomic IDE for JVM/Android development
+          Exec=/usr/local/bin/idea %f
+          Icon=/usr/share/pixmaps/jetbrains-idea.png
           Terminal=false
           Categories=Development;IDE;Java;
           StartupNotify=true
@@ -160,18 +170,15 @@
           MimeType=text/x-java;text/x-groovy;text/x-kotlin;application/x-java-archive;
           X-Desktop-File-Install-Version=0.26
 
-    - name: Update desktop database if available (non-fatal)
-      command: update-desktop-database
-      register: desktopdb
-      changed_when: "'updated' in (desktopdb.stderr | default('')) or 'updated' in (desktopdb.stdout | default(''))"
+    - name: Update desktop database
+      ansible.builtin.command: update-desktop-database /usr/share/applications
+      changed_when: false
       failed_when: false
 
-    - name: Show install summary
-      debug:
+    - name: Display installation summary
+      ansible.builtin.debug:
         msg:
-          - "IntelliJ {{ 'Ultimate' if idea_edition == 'IU' else 'Community' }} {{ idea_version }} installed to: {{ intellij_versioned_dir }}"
-          - "Stable symlink: {{ intellij_current_link }}"
-          - "Launcher: {{ intellij_launcher_symlink }}"
-          - "Desktop entry: {{ desktop_file_path }}"
-          - "Icon: {{ icon_dest_path }}"
-          - "desktop-file-utils (Debian): rc={{ dfile_utils_deb.rc | default('n/a') }}, (RHEL): rc={{ dfile_utils_rh.rc | default('n/a') }}"
+          - "IntelliJ IDEA {{ idea_version }} is installed."
+          - "Installation: /opt/intellij-2026.2.3"
+          - "Stable link: /opt/intellij"
+          - "Launcher: /usr/local/bin/idea"
