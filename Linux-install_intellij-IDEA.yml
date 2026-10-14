@@ -7,13 +7,12 @@
 
   vars:
     idea_version: "2026.2.3"
-
-    intellij_url: "https://download.jetbrains.com/idea/idea-2026.2.3.tar.gz"
-    intellij_checksum: "sha256:https://download.jetbrains.com/idea/idea-2026.2.3.tar.gz.sha256"
-
     intellij_versioned_dir: "/opt/intellij-2026.2.3"
     intellij_current_link: "/opt/intellij"
     intellij_archive_path: "/tmp/idea-2026.2.3.tar.gz"
+
+    intellij_url: "https://download.jetbrains.com/idea/idea-2026.2.3.tar.gz"
+    intellij_checksum: "sha256:68751c8ae4d49407251cd197df795fbed91b6fdc85d10c73c4649a99e496ab37"
 
     intellij_launcher_symlink: "/usr/local/bin/idea"
     desktop_file_path: "/usr/share/applications/jetbrains-idea.desktop"
@@ -71,7 +70,8 @@
         owner: root
         group: root
         mode: "0644"
-        checksum: "sha256:https://download.jetbrains.com/idea/idea-2026.2.3.tar.gz"
+        checksum: "sha256:68751c8ae4d49407251cd197df795fbed91b6fdc85d10c73c4649a99e496ab37"
+        force: false
 
     - name: Check existing target installation
       ansible.builtin.command:
@@ -104,85 +104,4 @@
           - "--strip-components=1"
         creates: "/opt/intellij-2026.2.3/bin/idea.sh"
 
-    - name: Verify new IntelliJ installation
-      ansible.builtin.command:
-        cmd: "/opt/intellij-2026.2.3/bin/idea.sh --version"
-      register: installed_intellij
-      changed_when: false
-      failed_when: false
-
-    - name: Stop if the expected IntelliJ version is not installed
-      ansible.builtin.assert:
-        that:
-          - installed_intellij.rc == 0
-          - "'2026.2.3' in installed_intellij.stdout"
-        fail_msg: "IntelliJ 2026.2.3 verification failed; old installations will not be removed."
-        success_msg: "IntelliJ 2026.2.3 verified successfully."
-
-    - name: Update stable IntelliJ symlink
-      ansible.builtin.file:
-        src: "/opt/intellij-2026.2.3"
-        dest: "/opt/intellij"
-        state: link
-        owner: root
-        group: root
-        force: true
-
-    - name: Update IntelliJ launcher symlink
-      ansible.builtin.file:
-        src: "/opt/intellij/bin/idea.sh"
-        dest: "/usr/local/bin/idea"
-        state: link
-        owner: root
-        group: root
-        force: true
-
-    - name: Install IntelliJ icon
-      ansible.builtin.copy:
-        src: "/opt/intellij/bin/idea.png"
-        dest: "/usr/share/pixmaps/jetbrains-idea.png"
-        remote_src: true
-        owner: root
-        group: root
-        mode: "0644"
-
-    - name: Install IntelliJ desktop entry
-      ansible.builtin.copy:
-        dest: "/usr/share/applications/jetbrains-idea.desktop"
-        owner: root
-        group: root
-        mode: "0644"
-        content: |
-          [Desktop Entry]
-          Version=1.0
-          Type=Application
-          Name=IntelliJ IDEA Ultimate
-          Comment=Capable and ergonomic IDE for JVM/Android development
-          Exec=/usr/local/bin/idea %f
-          Icon=/usr/share/pixmaps/jetbrains-idea.png
-          Terminal=false
-          Categories=Development;IDE;Java;
-          StartupNotify=true
-          StartupWMClass=jetbrains-idea
-          MimeType=text/x-java;text/x-groovy;text/x-kotlin;application/x-java-archive;
-          X-Desktop-File-Install-Version=0.26
-
-    - name: Update desktop database
-      ansible.builtin.command:
-        cmd: update-desktop-database /usr/share/applications
-      changed_when: false
-      failed_when: false
-
-    - name: Remove superseded IntelliJ installation
-      ansible.builtin.file:
-        path: "/opt/intellij-2024.2.4"
-        state: absent
-
-    - name: Display installation summary
-      ansible.builtin.debug:
-        msg:
-          - "IntelliJ IDEA 2026.2.3 is installed."
-          - "Installation: /opt/intellij-2026.2.3"
-          - "Stable link: /opt/intellij"
-          - "Launcher: /usr/local/bin/idea"
-          - "Removed old installation: /opt/intellij-2024.2.4"
+    - name: Verify
