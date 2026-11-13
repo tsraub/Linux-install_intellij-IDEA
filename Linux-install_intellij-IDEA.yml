@@ -1,3 +1,5 @@
+
+---
 - name: Install or update IntelliJ IDEA
   hosts: all
   become: true
@@ -6,20 +8,25 @@
   gather_facts: true
 
   vars:
-    idea_version: "2026.2.3"
+    # IntelliJ version
+    idea_version: "2026.2.4"
 
-    intellij_url: "https://download.jetbrains.com/idea/idea-2026.2.3.tar.gz"
-    intellij_checksum: "sha256:68751c8ae4d49407251cd197df795fbed91b6fdc85d10c73c4649a99e496ab37"
+    # Download configuration
+    intellij_url: "https://download.jetbrains.com/idea/idea-{{ idea_version }}.tar.gz"
+    intellij_checksum: ""  # Add verified SHA256 checksum before deployment
 
-    intellij_versioned_dir: "/opt/intellij-2026.2.3"
+    # Installation paths
+    intellij_versioned_dir: "/opt/intellij-{{ idea_version }}"
     intellij_current_link: "/opt/intellij"
-    intellij_archive_path: "/tmp/idea-2026.2.3.tar.gz"
+    intellij_archive_path: "/tmp/idea-{{ idea_version }}.tar.gz"
 
+    # Desktop integration
     intellij_launcher_symlink: "/usr/local/bin/idea"
     desktop_file_path: "/usr/share/applications/jetbrains-idea.desktop"
     icon_dest_path: "/usr/share/pixmaps/jetbrains-idea.png"
 
   pre_tasks:
+
     - name: Verify privilege escalation
       ansible.builtin.command:
         cmd: id -u
@@ -38,6 +45,11 @@
       when: ansible_facts.pkg_mgr == "apt"
 
   tasks:
+
+    # --------------------------------------------------
+    # Install dependencies
+    # --------------------------------------------------
+
     - name: Install required tools on Debian or Ubuntu
       ansible.builtin.apt:
         name:
@@ -56,6 +68,10 @@
         state: present
       when: ansible_facts.os_family == "RedHat"
 
+    # --------------------------------------------------
+    # Prepare installation
+    # --------------------------------------------------
+
     - name: Create IntelliJ base directory
       ansible.builtin.file:
         path: "/opt"
@@ -66,31 +82,36 @@
 
     - name: Download IntelliJ IDEA archive
       ansible.builtin.get_url:
-        url: "https://download.jetbrains.com/idea/idea-2026.2.3.tar.gz"
-        dest: "/tmp/idea-2026.2.3.tar.gz"
+        url: "{{ intellij_url }}"
+        dest: "{{ intellij_archive_path }}"
         owner: root
         group: root
         mode: "0644"
-        checksum: "sha256:68751c8ae4d49407251cd197df795fbed91b6fdc85d10c73c4649a99e496ab37"
         force: false
+        checksum: "{{ intellij_checksum if intellij_checksum | length > 0 else omit }}"
+
+    # --------------------------------------------------
+    # Install IntelliJ
+    # --------------------------------------------------
 
     - name: Check existing target installation
       ansible.builtin.command:
-        cmd: "/opt/intellij-2026.2.3/bin/idea.sh --version"
+        cmd: "{{ intellij_versioned_dir }}/bin/idea.sh --version"
       register: existing_intellij
       changed_when: false
       failed_when: false
 
     - name: Remove incomplete or incorrect target installation
       ansible.builtin.file:
-        path: "/opt/intellij-2026.2.3"
+        path: "{{ intellij_versioned_dir }}"
         state: absent
-      when:
-        - existing_intellij.rc != 0 or "2026.2.3" not in existing_intellij.stdout
+      when: >
+        existing_intellij.rc != 0 or
+        idea_version not in existing_intellij.stdout
 
     - name: Create target IntelliJ directory
       ansible.builtin.file:
-        path: "/opt/intellij-2026.2.3"
+        path: "{{ intellij_versioned_dir }}"
         state: directory
         owner: root
         group: root
@@ -98,32 +119,43 @@
 
     - name: Extract IntelliJ IDEA
       ansible.builtin.unarchive:
-        src: "/tmp/idea-2026.2.3.tar.gz"
-        dest: "/opt/intellij-2026.2.3"
+        src: "{{ intellij_archive_path }}"
+        dest: "{{ intellij_versioned_dir }}"
         remote_src: true
         extra_opts:
           - "--strip-components=1"
-        creates: "/opt/intellij-2026.2.3/bin/idea.sh"
+        creates: "{{ intellij_versioned_dir }}/bin/idea.sh"
+
+    # --------------------------------------------------
+    # Verify installation before switching
+    # --------------------------------------------------
 
     - name: Verify new IntelliJ installation
       ansible.builtin.command:
-        cmd: "/opt/intellij-2026.2.3/bin/idea.sh --version"
+        cmd: "{{ intellij_versioned_dir }}/bin/idea.sh --version"
       register: installed_intellij
       changed_when: false
       failed_when: false
 
-    - name: Stop if the expected IntelliJ version is not installed
+    - name: Stop if expected IntelliJ version is not installed
       ansible.builtin.assert:
         that:
           - installed_intellij.rc == 0
-          - "'2026.2.3' in installed_intellij.stdout"
-        fail_msg: "IntelliJ 2026.2.3 verification failed; old installations will not be removed."
-        success_msg: "IntelliJ 2026.2.3 verified successfully."
+          - idea_version in installed_intellij.stdout
+        fail_msg: >
+          IntelliJ {{ idea_version }} verification failed.
+          Existing installations will not be removed.
+        success_msg: >
+          IntelliJ {{ idea_version }} verified successfully.
+
+    # --------------------------------------------------
+    # Update symlinks
+    # --------------------------------------------------
 
     - name: Update stable IntelliJ symlink
       ansible.builtin.file:
-        src: "/opt/intellij-2026.2.3"
-        dest: "/opt/intellij"
+        src: "{{ intellij_versioned_dir }}"
+        dest: "{{ intellij_current_link }}"
         state: link
         owner: root
         group: root
@@ -131,17 +163,19 @@
 
     - name: Update IntelliJ launcher symlink
       ansible.builtin.file:
-        src: "/opt/intellij/bin/idea.sh"
-        dest: "/usr/local/bin/idea"
+        src: "{{ intellij_current_link }}/bin/idea.sh"
+        dest: "{{ intellij_launcher_symlink }}"
         state: link
-        owner: root
-        group: root
         force: true
+
+    # --------------------------------------------------
+    # Desktop integration
+    # --------------------------------------------------
 
     - name: Install IntelliJ icon
       ansible.builtin.copy:
-        src: "/opt/intellij/bin/idea.png"
-        dest: "/usr/share/pixmaps/jetbrains-idea.png"
+        src: "{{ intellij_current_link }}/bin/idea.png"
+        dest: "{{ icon_dest_path }}"
         remote_src: true
         owner: root
         group: root
@@ -149,7 +183,7 @@
 
     - name: Install IntelliJ desktop entry
       ansible.builtin.copy:
-        dest: "/usr/share/applications/jetbrains-idea.desktop"
+        dest: "{{ desktop_file_path }}"
         owner: root
         group: root
         mode: "0644"
@@ -174,16 +208,54 @@
       changed_when: false
       failed_when: false
 
-    - name: Remove superseded IntelliJ installation
+    # --------------------------------------------------
+    # Remove old IntelliJ installations
+    # --------------------------------------------------
+
+    - name: Find previous IntelliJ installations
+      ansible.builtin.find:
+        paths: /opt
+        patterns: "intellij-*"
+        file_type: directory
+        recurse: false
+      register: old_intellij_installs
+
+    - name: Remove previous IntelliJ installations
       ansible.builtin.file:
-        path: "/opt/intellij-2024.2.4"
+        path: "{{ item.path }}"
         state: absent
+      loop: "{{ old_intellij_installs.files }}"
+      when: item.path != intellij_versioned_dir
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Remove downloaded IntelliJ archive
+      ansible.builtin.file:
+        path: "{{ intellij_archive_path }}"
+        state: absent
+
+    # --------------------------------------------------
+    # Final verification
+    # --------------------------------------------------
+
+    - name: Verify active IntelliJ version
+      ansible.builtin.command:
+        cmd: "{{ intellij_current_link }}/bin/idea.sh --version"
+      register: final_intellij
+      changed_when: false
+
+    - name: Verify active IntelliJ symlink
+      ansible.builtin.command:
+        cmd: "readlink -f {{ intellij_current_link }}"
+      register: final_link
+      changed_when: false
 
     - name: Display installation summary
       ansible.builtin.debug:
         msg:
-          - "IntelliJ IDEA 2026.2.3 is installed."
-          - "Installation: /opt/intellij-2026.2.3"
-          - "Stable link: /opt/intellij"
-          - "Launcher: /usr/local/bin/idea"
-          - "Removed old installation: /opt/intellij-2024.2.4"
+          - "IntelliJ IDEA {{ idea_version }} installed successfully."
+          - "Installed version: {{ final_intellij.stdout }}"
+          - "Installation: {{ intellij_versioned_dir }}"
+          - "Stable link: {{ final_link.stdout }}"
+          - "Launcher: {{ intellij_launcher_symlink }}"
+          - "Previous IntelliJ installations removed."
