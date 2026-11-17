@@ -1,6 +1,6 @@
 
 ---
-- name: Install or update IntelliJ IDEA
+- name: Remediate vulnerable IntelliJ IDEA installations
   hosts: all
   become: true
   become_method: sudo
@@ -8,12 +8,15 @@
   gather_facts: true
 
   vars:
-    # IntelliJ version
-    idea_version: "2026.2.4"
+    # Required fixed version
+    idea_version: "2026.3"
+
+    # Previous vulnerable version
+    old_idea_version: "2026.2.4"
 
     # Download configuration
     intellij_url: "https://download.jetbrains.com/idea/idea-{{ idea_version }}.tar.gz"
-    intellij_checksum: ""  # Add verified SHA256 checksum before deployment
+    intellij_checksum: ""  # Populate with verified SHA256 if available
 
     # Installation paths
     intellij_versioned_dir: "/opt/intellij-{{ idea_version }}"
@@ -25,6 +28,9 @@
     desktop_file_path: "/usr/share/applications/jetbrains-idea.desktop"
     icon_dest_path: "/usr/share/pixmaps/jetbrains-idea.png"
 
+    # Known vulnerable installation
+    old_intellij_dir: "/opt/intellij-{{ old_idea_version }}"
+
   pre_tasks:
 
     - name: Verify privilege escalation
@@ -35,14 +41,14 @@
 
     - name: Fail if privilege escalation is inactive
       ansible.builtin.fail:
-        msg: "Privilege escalation is not active. Enable sudo/become."
+        msg: "Root privileges are required."
       when: uid_check.stdout != "0"
 
     - name: Update APT cache
       ansible.builtin.apt:
         update_cache: true
         cache_valid_time: 3600
-      when: ansible_facts.pkg_mgr == "apt"
+      when: ansible_facts.os_family == "Debian"
 
   tasks:
 
@@ -50,7 +56,7 @@
     # Install dependencies
     # --------------------------------------------------
 
-    - name: Install required tools on Debian or Ubuntu
+    - name: Install required tools on Debian/Ubuntu
       ansible.builtin.apt:
         name:
           - curl
@@ -60,7 +66,7 @@
       when: ansible_facts.os_family == "Debian"
 
     - name: Install required tools on RHEL family
-      ansible.builtin.yum:
+      ansible.builtin.dnf:
         name:
           - curl
           - tar
@@ -69,32 +75,45 @@
       when: ansible_facts.os_family == "RedHat"
 
     # --------------------------------------------------
-    # Prepare installation
+    # Download IntelliJ 2026.3
     # --------------------------------------------------
 
     - name: Create IntelliJ base directory
       ansible.builtin.file:
-        path: "/opt"
+        path: /opt
         state: directory
         owner: root
         group: root
         mode: "0755"
 
-    - name: Download IntelliJ IDEA archive
+    - name: Download IntelliJ IDEA 2026.3
       ansible.builtin.get_url:
         url: "{{ intellij_url }}"
         dest: "{{ intellij_archive_path }}"
         owner: root
         group: root
         mode: "0644"
-        force: false
-        checksum: "{{ intellij_checksum if intellij_checksum | length > 0 else omit }}"
+        force: true
+        checksum: "{{ 'sha256:' ~ intellij_checksum if intellij_checksum | length > 0 else omit }}"
+      register: intellij_download
+
+    - name: Verify downloaded archive exists
+      ansible.builtin.stat:
+        path: "{{ intellij_archive_path }}"
+      register: archive_stat
+
+    - name: Fail if archive is missing or empty
+      ansible.builtin.assert:
+        that:
+          - archive_stat.stat.exists
+          - archive_stat.stat.size | int > 0
+        fail_msg: "IntelliJ IDEA archive download failed."
 
     # --------------------------------------------------
-    # Install IntelliJ
+    # Check existing target installation
     # --------------------------------------------------
 
-    - name: Check existing target installation
+    - name: Check existing IntelliJ 2026.3 installation
       ansible.builtin.command:
         cmd: "{{ intellij_versioned_dir }}/bin/idea.sh --version"
       register: existing_intellij
@@ -107,9 +126,13 @@
         state: absent
       when: >
         existing_intellij.rc != 0 or
-        idea_version not in existing_intellij.stdout
+        ('2026.3' not in existing_intellij.stdout)
 
-    - name: Create target IntelliJ directory
+    # --------------------------------------------------
+    # Extract IntelliJ 2026.3
+    # --------------------------------------------------
+
+    - name: Create target installation directory
       ansible.builtin.file:
         path: "{{ intellij_versioned_dir }}"
         state: directory
@@ -117,7 +140,7 @@
         group: root
         mode: "0755"
 
-    - name: Extract IntelliJ IDEA
+    - name: Extract IntelliJ IDEA 2026.3
       ansible.builtin.unarchive:
         src: "{{ intellij_archive_path }}"
         dest: "{{ intellij_versioned_dir }}"
@@ -125,31 +148,53 @@
         extra_opts:
           - "--strip-components=1"
         creates: "{{ intellij_versioned_dir }}/bin/idea.sh"
+      when: >
+        existing_intellij.rc != 0 or
+        ('2026.3' not in existing_intellij.stdout)
 
     # --------------------------------------------------
-    # Verify installation before switching
+    # Verify new installation
     # --------------------------------------------------
 
-    - name: Verify new IntelliJ installation
+    - name: Verify IntelliJ 2026.3 installation
       ansible.builtin.command:
         cmd: "{{ intellij_versioned_dir }}/bin/idea.sh --version"
       register: installed_intellij
       changed_when: false
-      failed_when: false
 
-    - name: Stop if expected IntelliJ version is not installed
+    - name: Confirm fixed IntelliJ version
       ansible.builtin.assert:
         that:
           - installed_intellij.rc == 0
-          - idea_version in installed_intellij.stdout
+          - installed_intellij.stdout is search('2026\.3(\D|$)')
         fail_msg: >
-          IntelliJ {{ idea_version }} verification failed.
-          Existing installations will not be removed.
+          IntelliJ 2026.3 verification failed.
+          Detected version: {{ installed_intellij.stdout }}
         success_msg: >
-          IntelliJ {{ idea_version }} verified successfully.
+          IntelliJ IDEA 2026.3 successfully verified.
 
     # --------------------------------------------------
-    # Update symlinks
+    # Protect existing installation before switching
+    # --------------------------------------------------
+
+    - name: Check current IntelliJ path
+      ansible.builtin.stat:
+        path: "{{ intellij_current_link }}"
+        follow: false
+      register: current_link_stat
+
+    - name: Protect existing real installation directory
+      ansible.builtin.assert:
+        that:
+          - >
+            not current_link_stat.stat.exists or
+            current_link_stat.stat.islnk
+        fail_msg: >
+          /opt/intellij is an actual directory, not a symlink.
+          Manual migration is required before switching installations.
+
+    # --------------------------------------------------
+    # Switch active IntelliJ installation
     # --------------------------------------------------
 
     - name: Update stable IntelliJ symlink
@@ -191,8 +236,8 @@
           [Desktop Entry]
           Version=1.0
           Type=Application
-          Name=IntelliJ IDEA Ultimate
-          Comment=Capable and ergonomic IDE for JVM/Android development
+          Name=IntelliJ IDEA
+          Comment=JetBrains IntelliJ IDEA
           Exec=/usr/local/bin/idea %f
           Icon=/usr/share/pixmaps/jetbrains-idea.png
           Terminal=false
@@ -200,7 +245,6 @@
           StartupNotify=true
           StartupWMClass=jetbrains-idea
           MimeType=text/x-java;text/x-groovy;text/x-kotlin;application/x-java-archive;
-          X-Desktop-File-Install-Version=0.26
 
     - name: Update desktop database
       ansible.builtin.command:
@@ -209,33 +253,7 @@
       failed_when: false
 
     # --------------------------------------------------
-    # Remove old IntelliJ installations
-    # --------------------------------------------------
-
-    - name: Find previous IntelliJ installations
-      ansible.builtin.find:
-        paths: /opt
-        patterns: "intellij-*"
-        file_type: directory
-        recurse: false
-      register: old_intellij_installs
-
-    - name: Remove previous IntelliJ installations
-      ansible.builtin.file:
-        path: "{{ item.path }}"
-        state: absent
-      loop: "{{ old_intellij_installs.files }}"
-      when: item.path != intellij_versioned_dir
-      loop_control:
-        label: "{{ item.path }}"
-
-    - name: Remove downloaded IntelliJ archive
-      ansible.builtin.file:
-        path: "{{ intellij_archive_path }}"
-        state: absent
-
-    # --------------------------------------------------
-    # Final verification
+    # Verify active installation BEFORE cleanup
     # --------------------------------------------------
 
     - name: Verify active IntelliJ version
@@ -250,12 +268,77 @@
       register: final_link
       changed_when: false
 
-    - name: Display installation summary
+    - name: Assert active version is fixed
+      ansible.builtin.assert:
+        that:
+          - final_intellij.rc == 0
+          - final_intellij.stdout is search('2026\.3(\D|$)')
+          - final_link.stdout == intellij_versioned_dir
+        fail_msg: >
+          Active IntelliJ verification failed.
+          The old installation will not be removed.
+
+    # --------------------------------------------------
+    # Remove vulnerable installation
+    # --------------------------------------------------
+
+    - name: Check old vulnerable installation
+      ansible.builtin.stat:
+        path: "{{ old_intellij_dir }}"
+      register: old_install_stat
+
+    - name: Remove old vulnerable IntelliJ installation
+      ansible.builtin.file:
+        path: "{{ old_intellij_dir }}"
+        state: absent
+      when:
+        - old_install_stat.stat.exists
+        - old_install_stat.stat.isdir
+
+    # --------------------------------------------------
+    # Remove downloaded archive
+    # --------------------------------------------------
+
+    - name: Remove downloaded IntelliJ archive
+      ansible.builtin.file:
+        path: "{{ intellij_archive_path }}"
+        state: absent
+
+    # --------------------------------------------------
+    # Final remediation verification
+    # --------------------------------------------------
+
+    - name: Check old installation is removed
+      ansible.builtin.stat:
+        path: "{{ old_intellij_dir }}"
+      register: old_install_final
+
+    - name: Verify active IntelliJ installation again
+      ansible.builtin.command:
+        cmd: "{{ intellij_current_link }}/bin/idea.sh --version"
+      register: remediation_version
+      changed_when: false
+
+    - name: Final remediation assertion
+      ansible.builtin.assert:
+        that:
+          - remediation_version.rc == 0
+          - remediation_version.stdout is search('2026\.3(\D|$)')
+          - not old_install_final.stat.exists
+        fail_msg: >
+          IntelliJ vulnerability remediation verification failed.
+          Check the installation paths and version.
+        success_msg: >
+          SUCCESS: IntelliJ IDEA 2026.3 is active.
+          Vulnerable IntelliJ 2026.2.4 installation removed.
+
+    - name: Display remediation summary
       ansible.builtin.debug:
         msg:
-          - "IntelliJ IDEA {{ idea_version }} installed successfully."
-          - "Installed version: {{ final_intellij.stdout }}"
+          - "Host: {{ inventory_hostname }}"
+          - "Remediation: SUCCESS"
+          - "Required version: {{ idea_version }}"
+          - "Installed version: {{ remediation_version.stdout }}"
           - "Installation: {{ intellij_versioned_dir }}"
-          - "Stable link: {{ final_link.stdout }}"
-          - "Launcher: {{ intellij_launcher_symlink }}"
-          - "Previous IntelliJ installations removed."
+          - "Active symlink: {{ final_link.stdout }}"
+          - "Old vulnerable installation removed: YES"
